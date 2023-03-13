@@ -1,0 +1,27 @@
+collections:
+  acmeCo/greetings:
+    schema:
+      properties:
+        count:
+          type: integer
+        counter:
+          type: string
+        message:
+          type: string
+      required:
+        - count
+        - message
+      type: object
+    key: [/count, /counter]
+
+materializations:
+  acmeCo/materialization:
+    endpoint:
+      connector:
+        image: "ghcr.io/estuary/materialize-json:local"
+        config:
+          property: "config property"
+    bindings:
+      - resource:
+          resourceProperty: "resource property"
+        source: acmeCo/greetings
