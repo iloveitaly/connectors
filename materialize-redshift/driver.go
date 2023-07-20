@@ -644,23 +644,64 @@ func (d *transactor) Load(it *pm.LoadIterator, loaded func(int, json.RawMessage)
 	return nil
 }
 
-func (d *transactor) Store(it *pm.StoreIterator) (pm.StartCommitFunc, error) {
-	ctx := it.Context()
+type storeBinding struct {
+	// If the binding received any Store requests, this will be set true. Otherwise the binding
+	// received no stores and has no data to store for this round.
+	hasStores bool
 
 	// hasUpdates is used to track if a given binding includes only insertions for this store round
 	// or if it includes any updates. If it is only insertions a more efficient direct copy from S3
 	// can be performed into the target table rather than copying into a staging table and merging
 	// into the target table.
-	hasUpdates := make([]bool, len(d.bindings))
+	hasUpdates bool
+
+	// Location of the S3 object containing the data stored for this binding, in JSON format.
+	objectLocation string
+
+	// Calling this function will delete the S3 object.
+	cleanupFn func(context.Context) error
+}
+
+func (d *transactor) Store(it *pm.StoreIterator) (pm.StartCommitFunc, error) {
+	ctx := it.Context()
+
+	// storeBindings contains information necessary to store the data received for bindings during
+	// this transaction in commit. It is indexed to match the indexing of d.bindings.
+	storeBindings := make([]storeBinding, len(d.bindings))
 
 	// varcharColumnUpdates records any VARCHAR columns that need their lengths increased. The keys
 	// are table identifiers, and the values are a list of column identifiers that need altered.
 	// Columns will only ever be to altered it to VARCHAR(MAX).
 	varcharColumnUpdates := make(map[string][]string)
 
+	// previousBinding is used to track the transition from receiving stores for one binding to the
+	// next. The runtime guarantees that all Stores for binding N will be received prior to binding
+	// N+1, and that all stores of binding N will be received sequentially.
+	previousBinding := -1
 	for it.Next() {
+		log.WithField("binding", it.Binding).Info("it.Next for this binding")
+
+		// Flush the staged store file upload for the previous binding if we're onto a new binding,
+		// except for the first time we see any bindings since there won't be previous binding.
+		if previousBinding != -1 && previousBinding != it.Binding {
+			loc, cleanup, err := d.bindings[previousBinding].storeFile.flush()
+			if err != nil {
+				return nil, fmt.Errorf("flushing store file for binding[%d]: %w", it.Binding, err)
+			}
+			storeBindings[previousBinding].objectLocation = loc
+			storeBindings[previousBinding].cleanupFn = cleanup
+			log.WithField("previousBinding", previousBinding).WithField("storeBindings[previousBinding].objectLocation", storeBindings[previousBinding].objectLocation).Warn("flushed a binding")
+
+			if storeBindings[previousBinding].cleanupFn == nil {
+				log.WithField("previousBinding", previousBinding).Warn("cleanup fn was nil")
+			}
+		}
+		// Set for the next round; not used again in this loop.
+		previousBinding = it.Binding
+
+		storeBindings[it.Binding].hasStores = true
 		if it.Exists {
-			hasUpdates[it.Binding] = true
+			storeBindings[it.Binding].hasUpdates = true
 		}
 
 		var b = d.bindings[it.Binding]
@@ -717,6 +758,24 @@ func (d *transactor) Store(it *pm.StoreIterator) (pm.StartCommitFunc, error) {
 		return nil, it.Err()
 	}
 
+	// Flush the store file for the last binding that was observed, since there won't be a next one
+	// to flush it otherwise.
+	lastIdx := len(storeBindings) - 1
+	if storeBindings[lastIdx].hasStores {
+		loc, cleanup, err := d.bindings[lastIdx].storeFile.flush()
+		if err != nil {
+			return nil, fmt.Errorf("flushing store file for final binding[%d]: %w", lastIdx, err)
+		}
+		storeBindings[lastIdx].objectLocation = loc
+		storeBindings[lastIdx].cleanupFn = cleanup
+
+		log.WithField("lastIdx", lastIdx).WithField("storeBindings[lastIdx].objectLocation", storeBindings[lastIdx].objectLocation).Warn("flushed final binding")
+
+		if storeBindings[lastIdx].cleanupFn == nil {
+			log.WithField("lastIdx", lastIdx).Warn("cleanup fn was nil for final binding")
+		}
+	}
+
 	return func(ctx context.Context, runtimeCheckpoint *protocol.Checkpoint, runtimeAckCh <-chan struct{}) (*pf.ConnectorState, pf.OpFuture) {
 		var err error
 		if d.fence.Checkpoint, err = runtimeCheckpoint.Marshal(); err != nil {
@@ -728,11 +787,11 @@ func (d *transactor) Store(it *pm.StoreIterator) (pm.StartCommitFunc, error) {
 			return nil, pf.FinishedOperation(fmt.Errorf("evaluating fence update template: %w", err))
 		}
 
-		return nil, pf.RunAsyncOperation(func() error { return d.commit(ctx, fenceUpdate.String(), hasUpdates, varcharColumnUpdates) })
+		return nil, pf.RunAsyncOperation(func() error { return d.commit(ctx, fenceUpdate.String(), storeBindings, varcharColumnUpdates) })
 	}, nil
 }
 
-func (d *transactor) commit(ctx context.Context, fenceUpdate string, hasUpdates []bool, varcharColumnUpdates map[string][]string) error {
+func (d *transactor) commit(ctx context.Context, fenceUpdate string, storeBindings []storeBinding, varcharColumnUpdates map[string][]string) error {
 	conn, err := pgx.Connect(ctx, d.cfg.toURI())
 	if err != nil {
 		return fmt.Errorf("store pgx.Connect: %w", err)
@@ -789,20 +848,29 @@ func (d *transactor) commit(ctx context.Context, fenceUpdate string, hasUpdates 
 
 	var batch pgx.Batch
 
-	for idx, b := range d.bindings {
-		if !b.storeFile.started {
-			// No loads for this binding.
+	for idx, sb := range storeBindings {
+		log.WithFields(log.Fields{
+			"idx":               idx,
+			"sb.cleanupFn":      sb.cleanupFn,
+			"sb.objectLocation": sb.objectLocation,
+			"sb.hasStores":      sb.hasStores,
+			"sb.hasUpdates":     sb.hasUpdates,
+		}).Warn("commit store binding")
+
+		if sb.cleanupFn == nil {
+			log.WithField("the index", idx).Warn("cleanupfn was nil")
+		}
+
+		if !sb.hasStores {
+			// No stores for this binding.
 			continue
 		}
+		defer sb.cleanupFn(ctx)
 
-		objectLocation, delete, err := b.storeFile.flush()
-		if err != nil {
-			return fmt.Errorf("flushing store file for binding[%d]: %w", idx, err)
-		}
-		defer delete(ctx)
+		b := d.bindings[idx]
 
 		var dest string
-		if hasUpdates[idx] {
+		if sb.hasUpdates {
 			// Must merge from the staging table.
 			dest = fmt.Sprintf("flow_temp_table_%d", idx)
 		} else {
@@ -813,7 +881,7 @@ func (d *transactor) commit(ctx context.Context, fenceUpdate string, hasUpdates 
 		var copySql strings.Builder
 		if err := tplCopyFromS3.Execute(&copySql, copyFromS3Params{
 			Destination:    dest,
-			ObjectLocation: objectLocation,
+			ObjectLocation: sb.objectLocation,
 			Config:         *d.cfg,
 		}); err != nil {
 			return fmt.Errorf("evaluating copy from s3 template: %w", err)
@@ -821,7 +889,7 @@ func (d *transactor) commit(ctx context.Context, fenceUpdate string, hasUpdates 
 
 		batch.Queue(copySql.String())
 
-		if hasUpdates[idx] {
+		if sb.hasUpdates {
 			// This command must be executed separately so that the table is "visible" for the batch
 			// commands.
 			if _, err := txn.Exec(ctx, b.createStoreTableSQL); err != nil {

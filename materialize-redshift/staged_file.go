@@ -45,11 +45,9 @@ type stagedFile struct {
 
 func newStagedFile(client *s3.Client, bucket string, bucketPath string, cols []*sql.Column) *stagedFile {
 	return &stagedFile{
-		cols:   cols,
-		client: client,
-		uploader: manager.NewUploader(client, func(u *manager.Uploader) {
-			u.Concurrency = 1
-		}),
+		cols:       cols,
+		client:     client,
+		uploader:   manager.NewUploader(client),
 		bucket:     bucket,
 		bucketPath: bucketPath,
 	}
