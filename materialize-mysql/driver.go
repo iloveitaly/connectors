@@ -427,7 +427,7 @@ func (c client) FetchSpecAndVersion(ctx context.Context, specs sql.Table, materi
 
 // ExecStatements is used for the DDL statements of ApplyUpsert and ApplyDelete.
 // Mysql does not support transactional DDL statements
-func (c client) ExecStatements(ctx context.Context, statements []string) error {
+func (c client) ExecStatements(ctx context.Context, statements []string, _ string) error {
 	return c.withDB(func(db *stdsql.DB) error { return sql.StdSQLExecStatements(ctx, db, statements) })
 }
 

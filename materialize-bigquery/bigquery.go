@@ -354,7 +354,7 @@ func (c client) FetchSpecAndVersion(ctx context.Context, specs sql.Table, materi
 	return data.SpecB64, data.Version, nil
 }
 
-func (c client) ExecStatements(ctx context.Context, statements []string) error {
+func (c client) ExecStatements(ctx context.Context, statements []string, specBase64 string) error {
 	var (
 		tableCreateBatchSize = 25
 	)
@@ -364,7 +364,7 @@ func (c client) ExecStatements(ctx context.Context, statements []string) error {
 
 	doBatch := func(stmts []string) {
 		group.Go(func() error {
-			_, err := c.query(groupCtx, strings.Join(statements, "\n"))
+			_, err := c.query(groupCtx, strings.Join(stmts, "\n"))
 			return err
 		})
 	}
@@ -372,8 +372,8 @@ func (c client) ExecStatements(ctx context.Context, statements []string) error {
 	// Run all but the last statement in the list using parallel, batched calls to the database.
 	// Bigquery table creation cannot be done within a transaction, and running parallel calls
 	// drastically speeds up table creation when there is a large number of tables. The final
-	// statement provided is reserved for the spec statement and will be run only after all table
-	// creation statements have completed without error.
+	// statement provided is usually reserved for the spec statement and will be run only after all
+	// table creation statements have completed without error.
 	for _, tableCreate := range statements[:len(statements)-1] {
 		batch = append(batch, tableCreate)
 		if len(batch) == tableCreateBatchSize {
@@ -389,7 +389,20 @@ func (c client) ExecStatements(ctx context.Context, statements []string) error {
 		return fmt.Errorf("table create batch: %w", err)
 	}
 
-	// Once all table creation statements have completed, update the stored specification.
+	// BigQuery has a limit of 1MB on maximum SQL statement size. If the spec to update is very
+	// large, this will fail if executed as a static string. If the specBase64 value was provided
+	// with this invocation, replace the specBase64 with a placeholder and run the update as a
+	// parameterized query to allow for very large specs to be stored.
+	if specBase64 != "" {
+		updateSpecStmt := statements[len(statements)-1]
+		updateSpecStmtWithPlaceholder := strings.Replace(updateSpecStmt, "'"+specBase64+"'", "?", 1)
+
+		_, err := c.query(ctx, updateSpecStmtWithPlaceholder, specBase64)
+		return err
+	}
+
+	// The only current reason ExecStatements would be called for BigQuery without a specBase64 is
+	// for tests, so just run the query directly in that case.
 	_, err := c.query(ctx, statements[len(statements)-1])
 	return err
 }

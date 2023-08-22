@@ -40,11 +40,11 @@ func RunFenceTestCases(
 
 		createSQL, err := RenderTableTemplate(metaTable, createTableTpl)
 		require.NoError(t, err)
-		err = client.ExecStatements(ctx, []string{createSQL})
+		err = client.ExecStatements(ctx, []string{createSQL}, "")
 		require.NoError(t, err)
 
 		defer func() {
-			err = client.ExecStatements(ctx, []string{fmt.Sprintf("DROP TABLE %s;", metaTable.Identifier)})
+			err = client.ExecStatements(ctx, []string{fmt.Sprintf("DROP TABLE %s;", metaTable.Identifier)}, "")
 			require.NoError(t, err)
 		}()
 

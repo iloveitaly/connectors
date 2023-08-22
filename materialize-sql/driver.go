@@ -211,7 +211,7 @@ func (d *Driver) Apply(ctx context.Context, req *pm.Request_Apply) (*pm.Response
 
 				var col = Column{
 					Identifier: endpoint.Identifier(field),
-					Projection: Projection{ Projection: *loadedBinding.Collection.GetProjection(field) },
+					Projection: Projection{Projection: *loadedBinding.Collection.GetProjection(field)},
 				}
 				alterAction, err := endpoint.Client.DropNotNullForColumn(ctx, req.DryRun, newTable, col)
 				if err != nil {
@@ -267,7 +267,7 @@ func (d *Driver) Apply(ctx context.Context, req *pm.Request_Apply) (*pm.Response
 
 	if req.DryRun {
 		// No-op.
-	} else if err = endpoint.Client.ExecStatements(ctx, statements); err != nil {
+	} else if err = endpoint.Client.ExecStatements(ctx, statements, base64.StdEncoding.EncodeToString(specBytes)); err != nil {
 		return nil, fmt.Errorf("applying schema updates: %w", err)
 	}
 

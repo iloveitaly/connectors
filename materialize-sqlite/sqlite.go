@@ -116,7 +116,7 @@ func (c client) FetchSpecAndVersion(ctx context.Context, specs sql.Table, materi
 	return "", "", stdsql.ErrNoRows
 }
 
-func (c client) ExecStatements(ctx context.Context, statements []string) error {
+func (c client) ExecStatements(ctx context.Context, statements []string, _ string) error {
 	return c.withDB(func(db *stdsql.DB) error { return sql.StdSQLExecStatements(ctx, db, statements) })
 }
 
@@ -185,7 +185,7 @@ func newTransactor(
 		}
 	}
 
-	if err = ep.Client.ExecStatements(ctx, statements); err != nil {
+	if err = ep.Client.ExecStatements(ctx, statements, ""); err != nil {
 		return nil, fmt.Errorf("applying schema updates: %w", err)
 	}
 

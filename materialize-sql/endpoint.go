@@ -18,7 +18,7 @@ type Client interface {
 	// FetchSpecAndVersion retrieves the materialization from Table `specs`,
 	// or returns sql.ErrNoRows if no such spec exists.
 	FetchSpecAndVersion(ctx context.Context, specs Table, materialization pf.Materialization) (specB64, version string, _ error)
-	ExecStatements(ctx context.Context, statements []string) error
+	ExecStatements(ctx context.Context, statements []string, specBase64 string) error
 	InstallFence(ctx context.Context, checkpoints Table, fence Fence) (Fence, error)
 
 	// Driver-specific method for adding a column to a table. Some databases support syntax like

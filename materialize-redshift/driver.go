@@ -419,7 +419,7 @@ func (c client) FetchSpecAndVersion(ctx context.Context, specs sql.Table, materi
 	return
 }
 
-func (c client) ExecStatements(ctx context.Context, statements []string) error {
+func (c client) ExecStatements(ctx context.Context, statements []string, _ string) error {
 	return c.withDB(func(db *stdsql.DB) error { return sql.StdSQLExecStatements(ctx, db, statements) })
 }
 

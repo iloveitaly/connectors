@@ -313,7 +313,7 @@ func (c client) FetchSpecAndVersion(ctx context.Context, specs sql.Table, materi
 	return
 }
 
-func (c client) ExecStatements(ctx context.Context, statements []string) error {
+func (c client) ExecStatements(ctx context.Context, statements []string, _ string) error {
 	var (
 		tableCreateBatchSize = 25
 	)
