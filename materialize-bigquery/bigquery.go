@@ -16,6 +16,7 @@ import (
 	sql "github.com/estuary/connectors/materialize-sql"
 	pf "github.com/estuary/flow/go/protocols/flow"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
 )
@@ -354,10 +355,42 @@ func (c client) FetchSpecAndVersion(ctx context.Context, specs sql.Table, materi
 }
 
 func (c client) ExecStatements(ctx context.Context, statements []string) error {
-	// We don't explicitly wrap `statements` in a transaction, as not all databases support
-	// transactional DDL statements, but we do run them through a single connection. This allows a
-	// driver to explicitly run `BEGIN;` and `COMMIT;` statements around a transactional operation.
-	_, err := c.query(ctx, strings.Join(statements, "\n"))
+	var (
+		tableCreateBatchSize = 25
+	)
+
+	group, groupCtx := errgroup.WithContext(ctx)
+	batch := []string{}
+
+	doBatch := func(stmts []string) {
+		group.Go(func() error {
+			_, err := c.query(groupCtx, strings.Join(statements, "\n"))
+			return err
+		})
+	}
+
+	// Run all but the last statement in the list using parallel, batched calls to the database.
+	// Bigquery table creation cannot be done within a transaction, and running parallel calls
+	// drastically speeds up table creation when there is a large number of tables. The final
+	// statement provided is reserved for the spec statement and will be run only after all table
+	// creation statements have completed without error.
+	for _, tableCreate := range statements[:len(statements)-1] {
+		batch = append(batch, tableCreate)
+		if len(batch) == tableCreateBatchSize {
+			doBatch(batch)
+			batch = []string{}
+		}
+	}
+	if len(batch) > 0 {
+		doBatch(batch)
+	}
+
+	if err := group.Wait(); err != nil {
+		return fmt.Errorf("table create batch: %w", err)
+	}
+
+	// Once all table creation statements have completed, update the stored specification.
+	_, err := c.query(ctx, statements[len(statements)-1])
 	return err
 }
 
