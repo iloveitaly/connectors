@@ -261,38 +261,43 @@ func (src *Source) Pull(open *pc.Request_Open, stream *boilerplate.PullOutput) e
 		return err
 	}
 
-	grp, ctx := errgroup.WithContext(ctx)
-	for i, binding := range open.Capture.Bindings {
-		// Stream names represent an absolute path prefix to capture.
-		var res resource
-		if err := pf.UnmarshalStrict(binding.ResourceConfigJson, &res); err != nil {
-			return fmt.Errorf("error parsing resource config: %w", err)
-		}
-		var prefix = res.Stream
-		var state = states[prefix]
-
-		state.startSweep(horizon)
-
-		var r = &reader{
-			connector: &conn,
-			binding:   i,
-			stream:    stream,
-			pathRe:    pathRe,
-			prefix:    prefix,
-			schema:    binding.Collection.WriteSchemaJson,
-			state:     state,
-			range_:    open.Range,
-		}
-
-		grp.Go(func() error {
-			if err := r.sweep(ctx); err != nil {
-				return fmt.Errorf("prefix %s: %w", prefix, err)
+	for {
+		grp, ctx := errgroup.WithContext(ctx)
+		for i, binding := range open.Capture.Bindings {
+			// Stream names represent an absolute path prefix to capture.
+			var res resource
+			if err := pf.UnmarshalStrict(binding.ResourceConfigJson, &res); err != nil {
+				return fmt.Errorf("error parsing resource config: %w", err)
 			}
-			return nil
-		})
-	}
+			var prefix = res.Stream
+			var state = states[prefix]
 
-	return grp.Wait()
+			state.startSweep(horizon)
+
+			var r = &reader{
+				connector: &conn,
+				binding:   i,
+				stream:    stream,
+				pathRe:    pathRe,
+				prefix:    prefix,
+				schema:    binding.Collection.WriteSchemaJson,
+				state:     state,
+				range_:    open.Range,
+			}
+
+			grp.Go(func() error {
+				if err := r.sweep(ctx); err != nil {
+					return fmt.Errorf("prefix %s: %w", prefix, err)
+				}
+				return nil
+			})
+		}
+		if err := grp.Wait(); err != nil {
+			return err
+		}
+		log.Info("waiting for 1 second before scanning again")
+		time.Sleep(1 * time.Second)
+	}
 }
 
 func (src *Source) Apply(ctx context.Context, req *pc.Request_Apply) (*pc.Response_Applied, error) {
