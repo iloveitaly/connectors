@@ -121,7 +121,7 @@ func (d *Driver) Apply(ctx context.Context, req *pm.Request_Apply) (*pm.Response
 		panic(err) // Cannot fail to marshal.
 	}
 
-	// The Materialization specifications meta table is almost always requied.
+	// The Materialization specifications meta table is almost always required.
 	// It is only not required if the database is ephemeral (i.e. sqlite).
 	// The Checkpoints table is optional; include it if set by the Endpoint.
 	var tableShapes = []TableShape{}

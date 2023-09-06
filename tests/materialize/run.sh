@@ -27,16 +27,6 @@ TEST_DIR="${ROOT_DIR}/tests/materialize"
 # Temporary directory into which we'll write files.
 TEMP_DIR=$(mktemp -d /tmp/${CONNECTOR}-XXXXXX)
 
-# Arrange to clean up on exit.
-TEST_STATUS="Test Failed"
-function test_shutdown() {
-    source ${TEST_DIR}/${CONNECTOR}/cleanup.sh || true
-    rm -r ${TEMP_DIR}
-    >&2 echo -e "===========\n${TEST_STATUS}\n==========="
-}
-trap test_shutdown EXIT
-
-
 # TODO(johnny): These no longer need to be enviornment variables.
 # I'm leaving them as such to avoid churning tests more than is needed.
 export TEST_COLLECTION_SIMPLE="tests/simple"
@@ -94,6 +84,15 @@ function drive_connector {
         jq '.' >> ${SNAPSHOT} \
         || bail "connector invocation failed"
 }
+
+# Arrange to clean up on exit.
+TEST_STATUS="Test Failed"
+function test_shutdown() {
+    source ${TEST_DIR}/${CONNECTOR}/cleanup.sh || true
+    rm -r ${TEMP_DIR}
+    >&2 echo -e "===========\n${TEST_STATUS}\n==========="
+}
+trap test_shutdown EXIT
 
 # Drive the connector with the fixture.
 drive_connector ${TEMP_DIR}/flow.json ${TEST_DIR}/fixture.yaml

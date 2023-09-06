@@ -1,0 +1,103 @@
+--- Begin db.schema."table" createTargetTable ---
+CREATE TABLE IF NOT EXISTS db.schema."table" (
+	key1 BIGINT NOT NULL,
+	"key!2" BOOLEAN NOT NULL,
+	Camel_Case BIGINT,
+	"a Time" TIMESTAMP WITH TIME ZONE,
+	"array" JSON,
+	lower_case BIGINT,
+	value VARCHAR,
+	flow_document JSON NOT NULL,
+
+	PRIMARY KEY (key1, "key!2")
+);
+--- End db.schema."table" createTargetTable ---
+
+--- Begin db.schema."table" createTargetTable ---
+CREATE TABLE IF NOT EXISTS db.schema."table" (
+	theKey VARCHAR NOT NULL,
+	aValue BIGINT
+);
+--- End db.schema."table" createTargetTable ---
+
+--- Begin db.schema."table" loadQuery ---
+SELECT 0 AS binding, l.flow_document AS doc
+FROM db.schema."table" AS l
+JOIN read_json(
+	's3://a-bucket/key.jsonl',
+	format='newline_delimited',
+	columns={
+		key1: 'BIGINT NOT NULL',
+		"key!2": 'BOOLEAN NOT NULL'
+	}
+) AS r
+	 ON  l.key1 = r.key1
+	 AND l."key!2" = r."key!2"
+--- End db.schema."table" loadQuery ---
+
+--- Begin db.schema."table" loadQuery ---
+SELECT * FROM (SELECT -1, CAST(NULL AS JSON) LIMIT 0) as nodoc
+--- End db.schema."table" loadQuery ---
+
+--- Begin db.schema."table" storeQuery ---
+INSERT INTO db.schema."table" BY NAME
+SELECT * FROM read_json(
+	's3://a-bucket/key.jsonl',
+	format='newline_delimited',
+	columns={
+		key1: 'BIGINT NOT NULL',
+		"key!2": 'BOOLEAN NOT NULL',
+		Camel_Case: 'BIGINT',
+		"a Time": 'TIMESTAMP WITH TIME ZONE',
+		"array": 'JSON',
+		lower_case: 'BIGINT',
+		value: 'VARCHAR',
+		flow_document: 'JSON NOT NULL'
+	}
+)
+ON CONFLICT (key1, "key!2")
+DO UPDATE SET
+	Camel_Case = excluded.Camel_Case, 
+	"a Time" = excluded."a Time", 
+	"array" = excluded."array", 
+	lower_case = excluded.lower_case, 
+	value = excluded.value, 
+	flow_document = excluded.flow_document;
+--- End db.schema."table" storeQuery ---
+
+--- Begin db.schema."table" storeQuery ---
+INSERT INTO db.schema."table" BY NAME
+SELECT * FROM read_json(
+	's3://a-bucket/key.jsonl',
+	format='newline_delimited',
+	columns={
+		theKey: 'VARCHAR NOT NULL',
+		aValue: 'BIGINT'
+	}
+);
+--- End db.schema."table" storeQuery ---
+
+--- Begin target_table_no_values_materialized storeUpdate ---
+INSERT INTO ""."".target_table_no_values_materialized BY NAME
+SELECT * FROM read_json(
+	's3://a-bucket/key.jsonl',
+	format='newline_delimited',
+	columns={
+		key1: 'BIGINT NOT NULL',
+		key2: 'BOOLEAN NOT NULL',
+		flow_document: 'JSON NOT NULL'
+	}
+)
+ON CONFLICT (key1, key2)
+DO UPDATE SET
+	flow_document = excluded.flow_document;
+--- End target_table_no_values_materialized storeUpdate ---
+
+--- Begin Fence Update ---
+UPDATE checkpoints
+	SET   checkpoint = 'AAECAwQFBgcICQ=='
+	WHERE materialization = 'some/Materialization'
+	AND   key_begin = 1122867
+	AND   key_end   = 4293844428
+	AND   fence     = 123;
+--- End Fence Update ---

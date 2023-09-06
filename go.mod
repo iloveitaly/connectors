@@ -136,6 +136,7 @@ require (
 	github.com/klauspost/compress v1.15.15 // indirect
 	github.com/klauspost/cpuid/v2 v2.0.9 // indirect
 	github.com/kr/fs v0.1.0 // indirect
+	github.com/marcboeker/go-duckdb v1.4.4 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-ieproxy v0.0.9 // indirect
 	github.com/mattn/go-isatty v0.0.17 // indirect
