@@ -217,7 +217,18 @@ func (t *transactor) Store(it *pm.StoreIterator) (pm.StartCommitFunc, error) {
 	var ctx = it.Context()
 	t.round++
 
+	cleanups := make([]func(context.Context), len(t.bindings))
+
+	lastBinding := -1
 	for it.Next() {
+		if lastBinding != -1 && lastBinding != it.Binding {
+			cleanup, err := t.bindings[lastBinding].storeFile.flush(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("flushing binding [%d]: %w", lastBinding, err)
+			}
+			cleanups = append(cleanups, cleanup)
+		}
+
 		var b = t.bindings[it.Binding]
 		b.storeFile.start()
 
@@ -231,17 +242,37 @@ func (t *transactor) Store(it *pm.StoreIterator) (pm.StartCommitFunc, error) {
 		}
 	}
 
+	cleanup, err := t.bindings[lastBinding].storeFile.flush(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("flushing binding [%d]: %w", lastBinding, err)
+	}
+	cleanups = append(cleanups, cleanup)
+
 	return func(ctx context.Context, runtimeCheckpoint *protocol.Checkpoint, runtimeAckCh <-chan struct{}) (*pf.ConnectorState, pf.OpFuture) {
 		var err error
 		if t.fence.Checkpoint, err = runtimeCheckpoint.Marshal(); err != nil {
 			return nil, pf.FinishedOperation(fmt.Errorf("marshalling checkpoint: %w", err))
 		}
 
-		return nil, sql.CommitWithDelay(ctx, t.round, t.updateDelay, it.Total, t.commit)
+		return nil, sql.CommitWithDelay(
+			ctx,
+			t.round,
+			t.updateDelay,
+			it.Total,
+			func(ctx context.Context) error {
+				return t.commit(ctx, cleanups)
+			},
+		)
 	}, nil
 }
 
-func (t *transactor) commit(ctx context.Context) error {
+func (t *transactor) commit(ctx context.Context, cleanups []func(context.Context)) error {
+	defer func() {
+		for _, c := range cleanups {
+			c(ctx)
+		}
+	}()
+
 	// Build the slice of transactions required for a commit.
 	var subqueries []string
 
@@ -261,16 +292,10 @@ func (t *transactor) commit(ctx context.Context) error {
 	// append the SQL for that table.
 	var edcTableDefs = make(map[string]bigquery.ExternalData)
 	for idx, b := range t.bindings {
-		if !b.storeFile.started {
+		if cleanups[idx] == nil {
 			// No stores for this binding.
 			continue
 		}
-
-		delete, err := b.storeFile.flush(ctx)
-		if err != nil {
-			return fmt.Errorf("flushing store file for binding[%d]: %w", idx, err)
-		}
-		defer delete(ctx)
 
 		edcTableDefs[b.tempTableName] = b.storeFile.edc()
 
