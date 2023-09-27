@@ -337,7 +337,18 @@ func (d *transactor) Store(it *pm.StoreIterator) (pm.StartCommitFunc, error) {
 	// Columns will only ever be to altered it to VARCHAR(MAX).
 	varcharColumnUpdates := make(map[string][]string)
 
+	cleanups := make([]func(context.Context), len(d.bindings))
+
+	lastBinding := -1
 	for it.Next() {
+		if lastBinding != -1 && lastBinding != it.Binding {
+			cleanup, err := d.bindings[lastBinding].storeFile.flush(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("flushing binding [%d]: %w", lastBinding, err)
+			}
+			cleanups = append(cleanups, cleanup)
+		}
+
 		if it.Exists {
 			hasUpdates[it.Binding] = true
 		}
@@ -383,10 +394,18 @@ func (d *transactor) Store(it *pm.StoreIterator) (pm.StartCommitFunc, error) {
 		if err := b.storeFile.encodeRow(ctx, converted); err != nil {
 			return nil, fmt.Errorf("encoding row for store: %w", err)
 		}
+
+		lastBinding = it.Binding
 	}
 	if it.Err() != nil {
 		return nil, it.Err()
 	}
+
+	cleanup, err := d.bindings[lastBinding].storeFile.flush(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("flushing binding [%d]: %w", lastBinding, err)
+	}
+	cleanups = append(cleanups, cleanup)
 
 	return func(ctx context.Context, runtimeCheckpoint *protocol.Checkpoint, runtimeAckCh <-chan struct{}) (*pf.ConnectorState, pf.OpFuture) {
 		var err error
@@ -405,13 +424,25 @@ func (d *transactor) Store(it *pm.StoreIterator) (pm.StartCommitFunc, error) {
 			d.updateDelay,
 			it.Total,
 			func(ctx context.Context) error {
-				return d.commit(ctx, fenceUpdate.String(), hasUpdates, varcharColumnUpdates)
+				return d.commit(ctx, fenceUpdate.String(), hasUpdates, varcharColumnUpdates, cleanups)
 			},
 		)
 	}, nil
 }
 
-func (d *transactor) commit(ctx context.Context, fenceUpdate string, hasUpdates []bool, varcharColumnUpdates map[string][]string) error {
+func (d *transactor) commit(
+	ctx context.Context,
+	fenceUpdate string,
+	hasUpdates []bool,
+	varcharColumnUpdates map[string][]string,
+	cleanups []func(context.Context),
+) error {
+	defer func() {
+		for _, c := range cleanups {
+			c(ctx)
+		}
+	}()
+
 	conn, err := pgx.Connect(ctx, d.cfg.toURI())
 	if err != nil {
 		return fmt.Errorf("store pgx.Connect: %w", err)
@@ -475,16 +506,10 @@ func (d *transactor) commit(ctx context.Context, fenceUpdate string, hasUpdates 
 	}
 
 	for idx, b := range d.bindings {
-		if !b.storeFile.started {
+		if cleanups[idx] == nil {
 			// No stores for this binding.
 			continue
 		}
-
-		delete, err := b.storeFile.flush(ctx)
-		if err != nil {
-			return fmt.Errorf("flushing store file for binding[%d]: %w", idx, err)
-		}
-		defer delete(ctx)
 
 		if hasUpdates[idx] {
 			// Create the temporary table for staging values to merge into the target table.
