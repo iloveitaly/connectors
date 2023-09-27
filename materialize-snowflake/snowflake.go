@@ -600,6 +600,8 @@ func (d *transactor) Store(it *pm.StoreIterator) (pm.StartCommitFunc, error) {
 		if it.Exists {
 			b.store.mustMerge = true
 		}
+
+		lastBinding = it.Binding
 	}
 
 	cleanup, err := d.bindings[lastBinding].store.stage.flush(ctx, d.store.conn)
