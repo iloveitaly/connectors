@@ -11,6 +11,7 @@ import (
 
 	sql "github.com/estuary/connectors/materialize-sql"
 	"github.com/google/uuid"
+	log "github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -111,11 +112,6 @@ func (f *stagedFile) start(ctx context.Context, conn *stdsql.Conn) error {
 		return fmt.Errorf("creating temp dir: %w", err)
 	}
 
-	// Clear the Snowflake stage directory of any existing files leftover from the last txn.
-	if _, err := conn.ExecContext(ctx, fmt.Sprintf(`REMOVE @flow_v1/%s;`, f.uuid)); err != nil {
-		return fmt.Errorf("clearing stage: %w", err)
-	}
-
 	// Sanity check: Make sure the Snowflake stage directory is really empty. As far as I can tell
 	// if the REMOVE command is successful it means that all files really were removed so
 	// theoretically this is a superfluous check, but the consequences of any lingering files in the
@@ -165,16 +161,27 @@ func (f *stagedFile) encodeRow(row []interface{}) error {
 	return nil
 }
 
-func (f *stagedFile) flush() error {
+func (f *stagedFile) flush(ctx context.Context, conn *stdsql.Conn) (func(context.Context), error) {
 	if err := f.putFile(); err != nil {
-		return fmt.Errorf("flush putFile: %w", err)
+		return nil, fmt.Errorf("flush putFile: %w", err)
 	}
 
 	close(f.putFiles)
 	f.started = false
 
 	// Wait for all outstanding PUT requests to complete.
-	return f.group.Wait()
+	if err := f.group.Wait(); err != nil {
+		return nil, err
+	}
+
+	return func(ctx context.Context) {
+		if _, err := conn.ExecContext(ctx, fmt.Sprintf(`REMOVE @flow_v1/%s;`, f.uuid)); err != nil {
+			log.WithFields(log.Fields{
+				"stage": fmt.Sprintf("@flow_v1/%s;", f.uuid),
+				"err":   err,
+			}).Warn("failed to clear stage")
+		}
+	}, nil
 }
 
 func (f *stagedFile) putWorker(ctx context.Context, conn *stdsql.Conn, filePaths <-chan string) error {

@@ -533,9 +533,10 @@ func (d *transactor) Load(it *pm.LoadIterator, loaded func(int, json.RawMessage)
 	for _, b := range d.bindings {
 		if !b.load.stage.started {
 			// Pass.
-		} else if err := b.load.stage.flush(); err != nil {
+		} else if cleanup, err := b.load.stage.flush(ctx, d.load.conn); err != nil {
 			return fmt.Errorf("load.stage(): %w", err)
 		} else {
+			defer cleanup(ctx)
 			subqueries = append(subqueries, b.load.loadQuery)
 		}
 	}
@@ -571,9 +572,21 @@ func (d *transactor) Load(it *pm.LoadIterator, loaded func(int, json.RawMessage)
 }
 
 func (d *transactor) Store(it *pm.StoreIterator) (pm.StartCommitFunc, error) {
+	ctx := it.Context()
 	d.store.round++
 
+	cleanups := make([]func(context.Context), len(d.bindings))
+
+	lastBinding := -1
 	for it.Next() {
+		if lastBinding != -1 && lastBinding != it.Binding {
+			cleanup, err := d.bindings[lastBinding].store.stage.flush(ctx, d.store.conn)
+			if err != nil {
+				return nil, fmt.Errorf("flushing binding [%d]: %w", lastBinding, err)
+			}
+			cleanups = append(cleanups, cleanup)
+		}
+
 		var b = d.bindings[it.Binding]
 
 		if err := b.store.stage.start(it.Context(), d.store.conn); err != nil {
@@ -589,17 +602,37 @@ func (d *transactor) Store(it *pm.StoreIterator) (pm.StartCommitFunc, error) {
 		}
 	}
 
+	cleanup, err := d.bindings[lastBinding].store.stage.flush(ctx, d.store.conn)
+	if err != nil {
+		return nil, fmt.Errorf("flushing binding [%d]: %w", lastBinding, err)
+	}
+	cleanups = append(cleanups, cleanup)
+
 	return func(ctx context.Context, runtimeCheckpoint *protocol.Checkpoint, _ <-chan struct{}) (*pf.ConnectorState, pf.OpFuture) {
 		var err error
 		if d.store.fence.Checkpoint, err = runtimeCheckpoint.Marshal(); err != nil {
 			return nil, pf.FinishedOperation(fmt.Errorf("marshalling checkpoint: %w", err))
 		}
 
-		return nil, sql.CommitWithDelay(ctx, d.store.round, d.updateDelay, it.Total, d.commit)
+		return nil, sql.CommitWithDelay(
+			ctx,
+			d.store.round,
+			d.updateDelay,
+			it.Total,
+			func(ctx context.Context) error {
+				return d.commit(ctx, cleanups)
+			},
+		)
 	}, nil
 }
 
-func (d *transactor) commit(ctx context.Context) error {
+func (d *transactor) commit(ctx context.Context, cleanups []func(context.Context)) error {
+	defer func() {
+		for _, c := range cleanups {
+			c(ctx)
+		}
+	}()
+
 	var txn, err = d.store.conn.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("store.conn.BeginTx: %w", err)
@@ -621,11 +654,9 @@ func (d *transactor) commit(ctx context.Context) error {
 		return err
 	}
 
-	for _, b := range d.bindings {
-		if !b.store.stage.started {
-			// No table update required
-		} else if err := b.store.stage.flush(); err != nil {
-			return err
+	for idx, b := range d.bindings {
+		if cleanups[idx] == nil {
+			// No stores for this binding.
 		} else if !b.store.mustMerge {
 			// We can issue a faster COPY INTO the target table.
 			if _, err = txn.ExecContext(ctx, b.store.copyInto); err != nil {
