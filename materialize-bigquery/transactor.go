@@ -240,6 +240,8 @@ func (t *transactor) Store(it *pm.StoreIterator) (pm.StartCommitFunc, error) {
 		if err = b.storeFile.encodeRow(ctx, converted); err != nil {
 			return nil, fmt.Errorf("encoding Store to scratch file: %w", err)
 		}
+
+		lastBinding = it.Binding
 	}
 
 	cleanup, err := t.bindings[lastBinding].storeFile.flush(ctx)
