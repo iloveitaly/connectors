@@ -644,16 +644,21 @@ async def _binding_incremental_task(
                 "Implementation error: FetchChangesFn yielded a documents without a final LogCursor",
             )
 
-        sleep_for : timedelta = binding.resourceConfig.interval
+        sleep_for: timedelta = binding.resourceConfig.interval
 
         if not checkpoints:
             # We're idle. Sleep for the full back-off interval.
-            sleep_for = binding.resourceConfig.interval 
+            sleep_for = binding.resourceConfig.interval
 
         elif isinstance(state.cursor, datetime):
-            lag = (datetime.now(tz=UTC) - state.cursor)
+            lag = datetime.now(tz=UTC) - state.cursor
 
-            if lag > binding.resourceConfig.interval:
+            if (
+                lag > binding.resourceConfig.interval
+                # if the resource returns no records, then checkpoints are not recorded, and if no interval is set
+                # the connector will enter an infinite loop until records appear after the cursor
+                and binding.resourceConfig.interval.total_seconds() > 0
+            ):
                 # We're not idle. Attempt to fetch the next changes.
                 continue
             else:
