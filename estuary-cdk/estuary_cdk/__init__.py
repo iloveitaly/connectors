@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from logging import Logger
+import threading
 from pydantic import BaseModel
 from typing import TypeVar, Callable, AsyncGenerator, Generic
 import abc
@@ -91,6 +92,11 @@ class BaseConnector(Generic[Request], abc.ABC):
         def dump_all_tasks(signum, frame):
             tasks = asyncio.all_tasks(loop)
 
+            log.error(
+                "Received SIGQUIT, dumping all unfinished tasks",
+                {"tasks": len(tasks), "threads": threading.active_count()},
+            )
+
             for task in tasks:
                 if task is this_task:
                     continue
@@ -115,6 +121,7 @@ class BaseConnector(Generic[Request], abc.ABC):
             # Wake event loop.
             loop.call_soon_threadsafe(lambda: None)
 
+        # send SIGQUIT to kill the process and dump all tasks for debugging
         signal.signal(signal.SIGQUIT, dump_all_tasks)
 
         # Call _mixin_enter() on all mixed-in base classes.
