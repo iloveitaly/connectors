@@ -47,6 +47,7 @@ class Stopped(Exception):
     """
 
     error: str | None
+    original_exception: Exception | None
 
 
 # BaseConnector from which all Flow Connectors inherit.
@@ -150,6 +151,11 @@ class BaseConnector(Generic[Request], abc.ABC):
                     if exc.error:
                         log.error(f"{exc.error}")
                         failed = True
+
+                    if exc.original_exception:
+                        log.error(
+                            "".join(traceback.format_exception(exc.original_exception))
+                        )
                 else:
                     log.error("".join(traceback.format_exception(exc)))
                     failed = True

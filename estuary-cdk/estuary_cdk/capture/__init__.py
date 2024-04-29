@@ -277,11 +277,13 @@ class BaseCaptureConnector(
 
             # When capture() completes, the connector exits.
             if stopping.first_error:
+                # TODO this is problematic
                 raise Stopped(
-                    f"Task {stopping.first_error_task}: {stopping.first_error}"
+                    f"Task {stopping.first_error_task}: {stopping.first_error}",
+                    stopping.first_error,
                 )
             else:
-                raise Stopped(None)
+                raise Stopped(None, None)
 
         elif acknowledge := request.acknowledge:
             await self.acknowledge(acknowledge)
